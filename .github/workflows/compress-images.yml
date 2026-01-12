@@ -18,29 +18,46 @@ jobs:
         with:
           fetch-depth: 2 # 必须设置为 2 才能对比出本次 push 的差异文件
 
+      - name: Filter Images
+        id: filter
+        run: |
+          # 仅获取新增(A)、复制(C)、修改(M)、重命名(R)的图片，排除删除(D)
+          IMAGES=$(git diff --name-only --diff-filter=ACMR HEAD^ HEAD | grep -E "\.(jpg|jpeg|png|webp)$" || true)
+          if [ -z "$IMAGES" ]; then
+            echo "has_images=false" >> $GITHUB_OUTPUT
+            echo ">>> [信息] 本次提交不包含新增或修改的图片，跳过后续步骤。"
+          else
+            echo "has_images=true" >> $GITHUB_OUTPUT
+            echo "IMAGES_LIST<<EOF" >> $GITHUB_OUTPUT
+            echo "$IMAGES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo ">>> [信息] 发现待处理图片，继续流程。"
+          fi
+
       - name: Compress Images
+        if: steps.filter.outputs.has_images == 'true'
         uses: calibreapp/image-actions@main
         with:
           githubToken: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto Commit
+        if: steps.filter.outputs.has_images == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: auto compress images [skip ci]"
 
       - name: Warm up CDN (Preheat)
+        if: steps.filter.outputs.has_images == 'true'
         env:
           # 优先使用 GitHub Secrets 中的 CDN_DOMAIN
           CDN_DOMAIN: ${{ secrets.CDN_DOMAIN}}
+          FILES: ${{ steps.filter.outputs.IMAGES_LIST }}
         run: |
           echo ">>> [日志] 开始 CDN 预热流程..."
           echo ">>> [配置] 当前使用的 CDN 域名: $CDN_DOMAIN"
           
-          # 1. 获取本次提交中新增或修改的图片文件
-          FILES=$(git diff --name-only HEAD^ HEAD | grep -E "\.(jpg|jpeg|png|webp)$" || true)
-          
           if [ -z "$FILES" ]; then
-            echo ">>> [信息] 本次推送未发现需要预热的新图片。"
+            echo ">>> [信息] 未发现需要预热的新图片（过滤后）。"
             exit 0
           fi
 
