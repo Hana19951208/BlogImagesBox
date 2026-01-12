@@ -6,6 +6,8 @@ on:
       - '**.jpeg'
       - '**.png'
       - '**.webp'
+  workflow_dispatch: # 支持手动触发
+
 
 jobs:
   build:
