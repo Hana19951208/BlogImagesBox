@@ -111,19 +111,20 @@ jobs:
                 python3 -m pip install requests --user
             fi
             
-            # 4. 下载并同步图片
+            # 4. 下载并同步图片 (注意变量引用)
+            # 使用环境变量 IMAGES_LIST，该变量由 Action 注入
             for img_path in $IMAGES_LIST; do
                 raw_url="https://raw.githubusercontent.com/${{ github.repository }}/main/$img_path"
-                local_filename=$(echo "$img_path" | sed 's/\//_/g') # Flatten path: a/b.jpg -> a_b.jpg
+                local_filename=$(echo "$img_path" | sed 's/\//_/g') # 路径扁平化
                 
-                # 下载图片到 WORK_DIR
+                echo ">>> Downloading: $img_path"
                 curl -s -L -o "$local_filename" "$raw_url"
             done
             
             # 5. 执行同步
             echo ">>> [Exec] Running sync logic..."
+            # 确保传入的是正确引用的变量，且移除多余分号
             python3 sync_to_wechat.py "$IMAGES_LIST"
-
             
             # 6. 清理临时图片 (保留 history 和 script)
             rm -f *.jpg *.jpeg *.png *.webp
