@@ -36,15 +36,15 @@ jobs:
 
       - name: Compress Images
         if: steps.filter.outputs.has_images == 'true'
-        uses: calibreapp/image-actions@main
-        with:
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
+        uses: Six7/utils-image-compression@v1.0.4
 
       - name: Auto Commit
         if: steps.filter.outputs.has_images == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: auto compress images [skip ci]"
+          commit_message: "chore: 自动化压缩图片 [skip ci]"
+          branch: main
+
 
       - name: Warm up CDN (Preheat)
         if: steps.filter.outputs.has_images == 'true'
