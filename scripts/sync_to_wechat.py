@@ -15,6 +15,10 @@ def load_env():
                 if line and not line.startswith('#'):
                     key, value = line.split('=', 1)
                     os.environ[key] = value
+        print("💡 [Info] 已从本地 .env 加载配置")
+    else:
+        # 生产环境通常直接从系统环境变量读取
+        pass
 
 # 在生产环境，变量由 Action 注入；本地调试从 .env 加载
 load_env()
@@ -88,18 +92,28 @@ def get_access_token():
                     return data['token']
         except: pass
 
+    print(f">>> [Auth] 正在向微信请求新的 Access Token (AppID: {APP_ID[:4]}***)")
     url = f"https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={APP_ID}&secret={APP_SECRET}"
     try:
         res = requests.get(url, timeout=10)
         data = res.json()
         if 'access_token' in data:
             expires_at = time.time() + data['expires_in'] - 300
+            os.makedirs(WORKSPACE_DIR, exist_ok=True)
             with open(token_file, 'w') as f:
                 json.dump({'token': data['access_token'], 'expires_at': expires_at}, f)
+            print("✅ Access Token 刷新成功")
             return data['access_token']
+        else:
+            print(f"❌ 获取 Access Token 失败，微信返回结果: {data}")
+            if data.get('errcode') == 40164:
+                print("💡 提示：这通常是因为您的本地 IP 不在微信公众号的【IP白名单】中。")
+                print("   请在 GitHub Actions 中测试，或者前往微信后台添加本地 IP。")
+            return None
     except Exception as e:
-        print(f"❌ Token 获取异常: {e}")
-    return None
+        print(f"❌ 网络请求异常 (无法连接微信 API): {e}")
+        return None
+
 
 def upload_to_wechat(token, file_path, original_path):
     url = f"https://api.weixin.qq.com/cgi-bin/material/add_material?access_token={token}&type=image"
@@ -126,37 +140,43 @@ def main():
     history = load_history()
     
     for img_rel_path in IMAGES_LIST:
-        # 1. 下载图片
-        local_path = download_image(img_rel_path)
-        if not local_path or not os.path.exists(local_path):
-            continue
+        local_path = None
+        try:
+            # 1. 下载图片
+            local_path = download_image(img_rel_path)
+            if not local_path or not os.path.exists(local_path):
+                continue
 
-        # 2. 幂等检查
-        file_md5 = calculate_md5(local_path)
-        if img_rel_path in history and history[img_rel_path].get('md5') == file_md5:
-            print(f"⏩ [Skip] 已存在且无变更: {img_rel_path}")
-            continue
-        
-        # 3. 上传微信
-        print(f"🚀 [Sync] 上传中: {img_rel_path}")
-        result = upload_to_wechat(token, local_path, img_rel_path)
-        
-        if 'media_id' in result:
-            print(f"✅ 成功! MediaID: {result['media_id']}")
-            history[img_rel_path] = {
-                'media_id': result['media_id'],
-                'md5': file_md5,
-                'time': time.ctime()
-            }
-            save_history(history)
-        else:
-            print(f"❌ 失败: {result}")
-        
-        # 4. 清理本地临时文件
-        if os.path.exists(local_path):
-            os.remove(local_path)
+            # 2. 幂等检查 (MD5)
+            file_md5 = calculate_md5(local_path)
+            if img_rel_path in history and history[img_rel_path].get('md5') == file_md5:
+                print(f"⏩ [Skip] 已存在且无变更: {img_rel_path}")
+                continue
+            
+            # 3. 上传微信
+            print(f"🚀 [Sync] 上传中: {img_rel_path}")
+            result = upload_to_wechat(token, local_path, img_rel_path)
+            
+            if 'media_id' in result:
+                print(f"✅ 成功! MediaID: {result['media_id']}")
+                history[img_rel_path] = {
+                    'media_id': result['media_id'],
+                    'md5': file_md5,
+                    'time': time.ctime()
+                }
+                save_history(history)
+            else:
+                print(f"❌ 失败: {result}")
+                
+        except Exception as e:
+            print(f"❌ 处理过程中出现异常: {e}")
+        finally:
+            # 4. 无论成功、失败还是跳过，都清理本地临时文件
+            if local_path and os.path.exists(local_path):
+                os.remove(local_path)
         
         time.sleep(1)
 
 if __name__ == "__main__":
     main()
+
