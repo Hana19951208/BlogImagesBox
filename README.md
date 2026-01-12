@@ -53,18 +53,37 @@
 - `WECHAT_APP_SECRET`: 公众号 AppSecret
 - `SERVER_HOST`: 中转服务器 IP (150.158.24.67)
 - `SERVER_USER`: SSH 用户名 (root)
-- `SERVER_PASSWORD`: SSH 登录密码
+- `SERVER_KEY`: SSH 私钥 (`~/.ssh/id_rsa` 的内容)
 
-#### 💡 SSH 连接失败排查 (Handshake Failed)
-如果您在本地 Mac 可以登录但在 GitHub Actions 失败，请检查：
-1. **密码尾部空格**：请确保在 GitHub Secrets 中粘贴密码时，末尾没有多余的空格或换行符。
-2. **腾讯云安全拦截**：部分云服务器会限制海外 IP 的高频 SSH 访问，建议在腾讯云后台防火墙将端口 22 设为全开放。
-3. **推荐使用密钥**：若密码登录持续失败，建议更换为 `SERVER_KEY` (SSH Key) 方式，稳定性更高。
+#### 🔑 SSH 密钥配置教程
+为了确保 GitHub Actions 能够稳定连接到您的腾讯云服务器，推荐使用密钥登录：
+
+1. **本地生成密钥对** (在 Mac 终端执行)：
+   ```bash
+   ssh-keygen -t rsa -b 4096 -f ./id_rsa_github -N ""
+   ```
+   这会在当前目录生成 `id_rsa_github` (私钥) 和 `id_rsa_github.pub` (公钥)。
+
+2. **部署公钥到服务器**：
+   ```bash
+   ssh-copy-id -i ./id_rsa_github.pub root@150.158.24.67
+   ```
+   *或者手动将 `id_rsa_github.pub` 的内容粘贴到服务器的 `/root/.ssh/authorized_keys` 文件末尾。*
+
+3. **配置 GitHub Secrets**：
+   - 将 `id_rsa_github` 文件里的全部内容复制到 GitHub 仓库设置的 **`SERVER_KEY`** 中。
+
+4. **本地验证**：
+   在 Mac 终端执行，如果无需输入密码即可登录，则说明配置成功：
+   ```bash
+   ssh -i ./id_rsa_github root@150.158.24.67
+   ```
 
 #### ⚙️ 同步逻辑细节：
 - **注册表模式 (Registry Pattern)**：在服务器端维护 `sync_history.json`，通过 MD5 校验文件是否变动，避免重复上传素材，节省微信素材库额度。
 - **路径扁平化**：原始路径 `blog/2026/img.jpg` 会自动转义为 `blog_2026_img.jpg` 作为微信素材标题，方便后台管理和搜索。
 - **持久化脚本**：同步脚本持久化存放于服务器 `~/blog-sync/` 目录下，每次执行前会自动检查并从 GitHub 获取最新版本。
+
 
 
 
