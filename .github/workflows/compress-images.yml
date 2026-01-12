@@ -8,7 +8,7 @@ on:
       - '**.webp'
   workflow_dispatch:
 
-# 【新增】并发控制：确保同一时间只有一个任务在修改仓库，防止 Git 提交冲突
+# 确保并发上传时排队执行，防止 Git 提交冲突
 concurrency:
   group: image-hosting
   cancel-in-progress: false
@@ -24,65 +24,61 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Filter Images
+      - name: 1. 筛选本次新增图片
         id: filter
         run: |
-          # 仅获取新增(A)和修改(M)的文件，排除删除
-          # 使用 xargs 将多行转为单行空格分隔，方便传参给压缩插件
+          # 获取新增 (A) 和修改 (M) 的图片路径
           IMAGES=$(git diff --name-only --diff-filter=AM HEAD^ HEAD | grep -E "\.(jpg|jpeg|png|webp)$" | xargs echo || true)
           
           if [ -z "$IMAGES" ]; then
             echo "has_images=false" >> $GITHUB_OUTPUT
+            echo ">>> [信息] 未发现新增图片。"
           else
             echo "has_images=true" >> $GITHUB_OUTPUT
             echo "IMAGES_LIST=$IMAGES" >> $GITHUB_OUTPUT
-            echo ">>> [信息] 发现待处理图片: $IMAGES"
+            echo ">>> [信息] 待处理图片: $IMAGES"
           fi
 
-      - name: Compress Images
+      - name: 2. 安装并执行增量压缩
         if: steps.filter.outputs.has_images == 'true'
-        uses: calibreapp/image-actions@main
-        with:
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
-          # 【优化】只压缩本次变动的图片，不再扫描全库
-          imagePaths: ${{ steps.filter.outputs.IMAGES_LIST }}
-          compressOnly: true
-          jpegQuality: '80'
-          webpQuality: '80'
+        run: |
+          # 安装轻量级压缩工具
+          sudo apt-get update && sudo apt-get install -y jpegoptim optipng webp
+          
+          # 仅针对筛选出的文件进行循环压缩
+          for FILE in ${{ steps.filter.outputs.IMAGES_LIST }}; do
+            echo ">>> [处理中] $FILE"
+            if [[ $FILE == *.jpg ]] || [[ $FILE == *.jpeg ]]; then
+              jpegoptim --size=400k "$FILE" # 限制大小在 400k 以内
+            elif [[ $FILE == *.png ]]; then
+              optipng -o2 "$FILE"
+            elif [[ $FILE == *.webp ]]; then
+              echo ">>> [跳过] WebP 文件通常已优化，跳过二次压缩。"
+            fi
+          done
 
-      - name: Auto Commit
+
+      - name: 3. 自动提交 (修复匹配报错)
         if: steps.filter.outputs.has_images == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
+          # 【修复】不指定具体后缀，由插件自动检测变更的文件，避免 pathspec 报错
           commit_message: "chore: 自动化压缩图片 [skip ci]"
-          # 仅提交图片文件，防止误伤其他文件
-          file_pattern: '**.jpg **.jpeg **.png **.webp'
+          branch: main
+          # 去掉 file_pattern，让它自动 add 变动的文件
 
-      - name: Wait for Propagation
-        if: steps.filter.outputs.has_images == 'true'
-        # 【新增】等待 10 秒，确保 GitHub Raw 节点已同步最新文件
-        run: sleep 10
-
-      - name: Warm up CDN (Preheat)
+      - name: 4. 等待同步并预热 CDN
         if: steps.filter.outputs.has_images == 'true'
         env:
-          # 【优化】提供默认域名兜底，防止 Secret 为空
+          # 提供域名默认值兜底
           CDN_DOMAIN: ${{ secrets.CDN_DOMAIN || 'img.fangenwu.cn' }}
           FILES: ${{ steps.filter.outputs.IMAGES_LIST }}
         run: |
-          echo ">>> [日志] 开始 CDN 预热..."
-          SUCCESS_COUNT=0
-          
+          sleep 10 # 等待 GitHub Raw 更新
+          echo ">>> [日志] 开始针对新图片进行预热..."
           for FILE in $FILES; do
             URL="https://$CDN_DOMAIN/$FILE"
-            # 使用 -L 处理可能的重定向，-I 触发缓存
-            STATUS_CODE=$(curl -s -L -o /dev/null -I -w "%{http_code}" "$URL")
-            
-            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 304 ]; then
-              echo "✅ 成功 [$STATUS_CODE]: $URL"
-              SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-            else
-              echo "❌ 失败 [$STATUS_CODE]: $URL"
-            fi
+            # -L 跟随重定向，-I 获取头信息触发缓存
+            STATUS=$(curl -s -L -o /dev/null -I -w "%{http_code}" "$URL")
+            echo ">>> [预热结果] $STATUS - $URL"
           done
-          echo ">>> [日志] 预热完成，共成功 ${SUCCESS_COUNT} 个文件。"
