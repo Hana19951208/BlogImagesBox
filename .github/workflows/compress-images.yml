@@ -96,116 +96,34 @@ jobs:
           key: ${{ secrets.SERVER_KEY }}
           envs: WECHAT_APP_ID,WECHAT_APP_SECRET,IMAGES_LIST
           script: |
-            # 1. 创建临时目录
-            WORK_DIR="/tmp/blog-images-sync-${{ github.run_id }}"
+            # 1. 准备持久化目录
+            WORK_DIR=~/blog-sync
             mkdir -p $WORK_DIR
-            
-            # 2. 准备脚本 (直接写入内容，避免 SCP 复杂性)
-            cat > $WORK_DIR/sync_to_wechat.py << 'EOF'
-            import os, requests, sys, time
-
-            # 从环境变量获取配置
-            APP_ID = os.environ.get('WECHAT_APP_ID')
-            APP_SECRET = os.environ.get('WECHAT_APP_SECRET')
-            
-            # 文件列表
-            if len(sys.argv) > 1:
-                IMAGES_LIST = sys.argv[1].split()
-            else:
-                IMAGES_LIST = []
-
-            def get_access_token():
-                if not APP_ID or not APP_SECRET:
-                    print("❌ 错误：未配置 WECHAT_APP_ID 或 WECHAT_APP_SECRET")
-                    return None
-                url = f"https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={APP_ID}&secret={APP_SECRET}"
-                try:
-                    res = requests.get(url, timeout=10)
-                    data = res.json()
-                    return data.get('access_token')
-                except Exception as e:
-                    print(f"❌ Token 获取异常: {e}")
-                    return None
-
-            def upload_image(token, file_path):
-                url = f"https://api.weixin.qq.com/cgi-bin/material/add_material?access_token={token}&type=image"
-                file_name = os.path.basename(file_path)
-                # 使用完整路径作为 Title，方便后续搜索识别 (微信可能不支持斜杠，替换为下划线)
-                # 微信素材库是扁平的，这里用文件名作为标题标识
-                title = file_path.replace("/", "_")
-                
-                try:
-                    with open(file_path, 'rb') as f:
-                        files = {'media': (file_name, f)}
-                        # 永久素材上传
-                        res = requests.post(url, files=files, timeout=30)
-                        return res.json()
-                except Exception as e:
-                    return {"errcode": -1, "errmsg": str(e)}
-
-            def main():
-                print(">>> [WeChat Sync] Start...")
-                if not IMAGES_LIST:
-                    print(">>> No images to sync.")
-                    return
-
-                token = get_access_token()
-                if not token:
-                    print(">>> Failed to get access token.")
-                    sys.exit(1)
-
-                cwd = os.getcwd() # 当前是在 WORK_DIR
-                
-                for img_path in IMAGES_LIST:
-                    # 图片是通过 wget 下载到当前目录的，保留了目录结构吗？
-                    # 这里的逻辑通过 wget 下载图片
-                    # GitHub Raw URL: https://raw.githubusercontent.com/<user>/<repo>/main/<path>
-                    # 需要拼接完整的 Raw URL
-                    
-                    # 修正：直接下载到临时文件，名字保持结构以便识别
-                    
-                    raw_url = f"https://raw.githubusercontent.com/${{ github.repository }}/main/{img_path}"
-                    local_filename = img_path.replace("/", "_") # 扁平化文件名
-                    
-                    print(f">>> Downloading: {raw_url}")
-                    try:
-                        # 使用 curl 下载
-                        os.system(f"curl -s -L -o '{local_filename}' '{raw_url}'")
-                    except Exception as e:
-                        print(f"❌ Download failed: {e}")
-                        continue
-                        
-                    if not os.path.exists(local_filename):
-                        print("❌ File verify failed.")
-                        continue
-
-                    print(f">>> Syncing to WeChat: {img_path}")
-                    result = upload_image(token, local_filename)
-                    
-                    if 'media_id' in result:
-                        print(f"✅ Synced! MediaID: {result['media_id']}")
-                    else:
-                        print(f"❌ Failed: {result}")
-                    
-                    time.sleep(1)
-
-            if __name__ == "__main__":
-                main()
-            EOF
-            
-            # 3. 安装依赖 (如果服务器 python 环境没有 requests)
-            # 简单检查，如果没有 pip 可能报错，或者用 python3 -m pip
-            # 假设服务器有基础 python3 环境。如果担心环境污染，可以创建 venv，但这里追求轻量。
-            # 直接尝试运行，如果缺 requests 库则临时安装 (需要 root 权限可能不行，用 --user)
-            # 或者仅使用 urllib 标准库重写脚本以零依赖（更稳健）。
-            # 鉴于用户是腾讯云，网络环境应该不错，尝试 install requests
-            python3 -m pip install requests --user || true
-            
-            # 4. 执行同步
-            # 注意：传入 IMAGES_LIST
             cd $WORK_DIR
-            python3 sync_to_wechat.py "$IMAGES_LIST"
             
-            # 5. 清理
-            cd ..
-            rm -rf $WORK_DIR
+            # 2. 更新脚本 (始终抓取最新版)
+            echo ">>> [Deploy] Updating sync script..."
+            curl -s -o sync_to_wechat.py "https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/sync_to_wechat.py"
+            
+            # 3. 安装依赖 (如果缺 requests)
+            if ! python3 -c "import requests" 2>/dev/null; then
+                echo ">>> Installing dependencies..."
+                python3 -m pip install requests --user
+            fi
+            
+            # 4. 下载并同步图片
+            IMAGES="${{ steps.filter.outputs.IMAGES_LIST }}"
+            for img_path in $IMAGES; do
+                raw_url="https://raw.githubusercontent.com/${{ github.repository }}/main/$img_path"
+                local_filename=$(echo "$img_path" | sed 's/\//_/g') # Flatten path: a/b.jpg -> a_b.jpg
+                
+                # 下载图片到 WORK_DIR
+                curl -s -L -o "$local_filename" "$raw_url"
+            done
+            
+            # 5. 执行同步
+            echo ">>> [Exec] Running sync logic..."
+            python3 sync_to_wechat.py "$IMAGES"
+            
+            # 6. 清理临时图片 (保留 history 和 script)
+            rm -f *.jpg *.jpeg *.png *.webp
